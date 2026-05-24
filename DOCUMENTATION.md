@@ -854,17 +854,6 @@ streamlit run climate_nutrition_world3/dashboard_v2.py
 
 A browser window opens at `http://localhost:8501`. The model runs the baseline simulation automatically on load (takes about 1 second).
 
-### 13.4 Deploy to the web
-
-The dashboard can be deployed to Streamlit Community Cloud (free for public repos):
-
-1. Push the project to GitHub (already done for the repo `anand-adroid/PyWorld3-03-Canada`).
-2. Go to https://share.streamlit.io
-3. Click "New app" → select the repo → set:
-   - Branch: `main`
-   - Main file path: `climate_nutrition_world3/dashboard_v2.py`
-   - Python version: 3.12
-4. Click "Deploy". After 2-3 minutes the app has a public URL.
 
 ---
 
