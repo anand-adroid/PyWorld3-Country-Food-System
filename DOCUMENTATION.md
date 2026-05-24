@@ -14,14 +14,15 @@
 7. [Pollution Sector](#7-pollution-sector)
 8. [Nutrition Sector](#8-nutrition-sector)
 9. [Crop-Level Nutrient Analysis](#9-crop-level-nutrient-analysis)
-10. [How the Five Modules Connect](#10-how-the-five-modules-connect)
-11. [The Seven Feedback Loops](#11-the-seven-feedback-loops)
-12. [Complete Data Sources Reference](#12-complete-data-sources-reference)
-13. [Installation and Running the Dashboard](#13-installation-and-running-the-dashboard)
-14. [Dashboard User Guide: What to Change and What to See](#14-dashboard-user-guide-what-to-change-and-what-to-see)
-15. [Policy Implications for Nigeria](#15-policy-implications-for-nigeria)
-16. [Limitations and Caveats](#16-limitations-and-caveats)
-17. [References](#17-references)
+10. [Climate Module (Exogenous Driver)](#10-climate-module-exogenous-driver)
+11. [How the Modules Connect](#11-how-the-modules-connect)
+12. [The Seven Feedback Loops](#12-the-seven-feedback-loops)
+13. [Complete Data Sources Reference](#13-complete-data-sources-reference)
+14. [Installation and Running the Dashboard](#14-installation-and-running-the-dashboard)
+15. [Dashboard User Guide: What to Change and What to See](#15-dashboard-user-guide-what-to-change-and-what-to-see)
+16. [Policy Implications for Nigeria](#16-policy-implications-for-nigeria)
+17. [Limitations and Caveats](#17-limitations-and-caveats)
+18. [References](#18-references)
 
 ---
 
@@ -414,6 +415,8 @@ Agricultural pollution delivered to Pollution sector:
   ag_pollution = ag_investment × input_multiplier
 ```
 
+The `climate` factor above is the **simple linear model**. When the user selects an IPCC SSP scenario (sidebar dropdown), the `ClimateAgricultureBridge` overrides `climate` with a per-year value computed from the IPCC trajectory. See Section 10 for the climate model in detail.
+
 ### 6.6 Inputs and outputs
 
 **Receives:** pop from Population (current year); ag_investment from Capital (current year); ppolx from Pollution (prior year)
@@ -692,11 +695,163 @@ Adequacy below 1.0 means a deficit. Below 0.5 means severe deficit.
 
 ---
 
-## 10. How the Five Modules Connect
+## 10. Climate Module (Exogenous Driver)
 
-### 10.1 The full coupling matrix
+**Files:**
+- `climate_nutrition_world3/sectors/climate_agriculture_bridge.py` — bridges IPCC SSP scenarios into the agriculture sector
+- `climate_nutrition_modelling/models/climate_scenarios.py` — generates IPCC AR6 temperature, precipitation, and CO2 trajectories
 
-Read this as: "this row sends to this column". The entry shows the variable and which year's value is used.
+### 10.1 What climate is in this model
+
+Climate is an **exogenous driver**, not one of the five endogenous sectors. It enters the model from outside (set by the user via an IPCC scenario or a simple sensitivity parameter), affects the **Agriculture sector**'s yield calculation, and through agriculture cascades into Nutrition. Climate does **not respond to anything inside the model** — the model does not represent the feedback from human activity to atmospheric warming. That feedback exists in reality and is enormous on a global scale, but at country scale it is dominated by global emissions outside any single country's control, so we treat climate as an external input.
+
+### 10.2 Two modes of operation
+
+The agriculture sector accepts a `climate_factor` between 0 (total crop failure) and 1.0 (no climate damage). This factor is computed in one of two ways, selectable from the dashboard sidebar or the Python API:
+
+**Mode A — Simple linear model (default).** The agriculture sector reduces yield by `climate_sensitivity` per year after the year 2000. Calibrated values: Canada 0.001/year, Nigeria 0.002/year (Nigeria more vulnerable due to tropical heat already being near plant heat tolerance limits). This mode requires no climate scenario data; it is purely a calibration parameter that the user can adjust with a slider.
+
+**Mode B — IPCC AR6 SSP scenario.** The user selects one of four Shared Socioeconomic Pathways from the sidebar. The model uses `ClimateAgricultureBridge` to compute year-by-year temperature, precipitation, and CO2 from the IPCC trajectory, then combines them into a climate stress factor that drives agricultural yield. This mode uses real published trajectories instead of a calibrated sensitivity.
+
+### 10.3 IPCC AR6 SSP scenarios available
+
+Source: IPCC AR6 WGI (2021) Table SPM.1 best estimates; CMIP6 ensemble medians for regional downscaling.
+
+| Scenario | Description | Global warming 2100 | CO2 2100 |
+|---|---|---|---|
+| SSP1-2.6 | Sustainability — strong mitigation | +1.8 C | 430 ppm |
+| SSP2-4.5 | Middle of the Road — moderate mitigation | +2.7 C | 600 ppm |
+| SSP3-7.0 | Regional Rivalry — weak mitigation | +3.6 C | 850 ppm |
+| SSP5-8.5 | Fossil-fuel Development — no mitigation | +4.4 C | 1135 ppm |
+
+### 10.4 Regional climate baselines
+
+Source: CMIP6 ensemble averages for each country's main food-producing region. Each region has its own warming amplification factor (some regions warm faster than the global average).
+
+| Region | Country | Baseline temp | Baseline precip | Warming amplification | Precip trend |
+|---|---|---|---|---|---|
+| Southern Ontario | Canada | 19.5 C | 450 mm | 1.4 x global | +5% per C |
+| Northern Nigeria (Savanna) | Nigeria | 30.0 C | 800 mm | 1.1 x global | -5% per C (drying) |
+| Southern Nigeria (Forest) | Nigeria (alt) | 27.0 C | 1400 mm | 1.0 x global | -2% per C |
+
+Canada's main food-producing region (Southern Ontario) warms 40% faster than the global average (continental amplification). Northern Nigeria's savanna warms slightly faster than global and is on a drying trend (Sahel desertification pattern), which is why Nigeria's climate stress in IPCC mode is much harsher than in the simple linear mode.
+
+### 10.5 Climate stress factor calculation
+
+For each year `t`, the bridge computes:
+
+```
+temperature(t)   = baseline_temp + warming_amplification * global_warming(t) + noise
+precipitation(t) = baseline_precip * (1 + precip_trend * global_warming(t) + noise)
+CO2(t)           = interpolated from SSP CO2 schedule
+
+temp_stress      = 1 - 0.05 * |temperature - optimal|^1.3
+precip_stress    = 1 - 0.001 * |precipitation - baseline|
+CO2_benefit      = 1 + 0.0001 * (CO2 - 400)            (CO2 fertilisation, capped at +15%)
+
+climate_stress   = clip(temp_stress * precip_stress * CO2_benefit, 0.3, 1.15)
+```
+
+This stress factor is then used as the agriculture sector's `climate_factor`, multiplying effective yield. The bounds 0.3 to 1.15 reflect physical limits: even severe stress preserves about 30% of yield (some crops always survive), and CO2 fertilisation can boost yield up to 15% above baseline.
+
+### 10.6 CO2 nutrient dilution (Zhu et al. 2018)
+
+Source: Zhu, C. et al. (2018), *Nature Plants* 4:957-964. Elevated atmospheric CO2 increases plant carbohydrate production but reduces protein, iron, and zinc per unit mass of edible crop. The model applies these factors to per-tonne nutrient values:
+
+```
+protein_factor = 1 - 0.00015 * max(0, CO2 - 400)   (about 5% loss at 700 ppm)
+iron_factor    = 1 - 0.00015 * max(0, CO2 - 400)
+zinc_factor    = 1 - 0.00010 * max(0, CO2 - 400)
+```
+
+This means climate change does not just reduce **how much** food is produced — it also reduces the **nutritional quality** of each kilogram. Under SSP5-8.5 by 2100 (1135 ppm CO2), crops have approximately 11% less protein, 11% less iron, and 7% less zinc per kg than today.
+
+### 10.7 How climate connects to the other modules
+
+```
+                 +-------------------+
+                 |  Climate Module   |
+                 | (exogenous input) |
+                 +---------+---------+
+                           |
+                           | climate_factor (each year)
+                           v
+                 +-------------------+
+                 |   Agriculture     |    yield = AL * lfert * climate_factor * other
+                 +---------+---------+
+                           |
+                           | food_per_capita
+                           v
+                 +-------------------+
+                 |    Nutrition      |
+                 +-------------------+
+                           ^
+                           | CO2 nutrient dilution (when SSP active)
+                 +---------+---------+
+                 |  Climate Module   |
+                 +-------------------+
+```
+
+Two distinct effects flow from climate to the agriculture/nutrition chain:
+
+1. **Yield damage.** climate_factor multiplies effective yield in the agriculture sector. A factor of 0.5 means crops produce half as much per hectare. Under SSP5-8.5, Nigeria's climate factor falls from 1.0 in 1971 to 0.37 by 2100.
+
+2. **Nutrient quality damage.** CO2 dilution factors reduce per-tonne protein, iron, and zinc content. This is applied during per-crop nutrient analysis in the dashboard's Nutrition tab.
+
+Climate does **not** affect Population, Capital, or Pollution sectors directly. All climate effects flow through Agriculture into Nutrition.
+
+### 10.8 Verified climate outputs at 2100
+
+Real model outputs for Nigeria under the four SSP scenarios plus the simple linear baseline:
+
+| Mode | Climate factor 2100 | Temp 2100 | CO2 2100 | Food ratio 2100 |
+|---|---|---|---|---|
+| Simple linear | 0.80 | (not computed) | (not computed) | 0.03 |
+| SSP1-2.6 (Sustainability) | 0.59 | 31.8 C | 430 ppm | 0.02 |
+| SSP2-4.5 (Middle) | (intermediate) | ~32.7 C | 600 ppm | (intermediate) |
+| SSP3-7.0 (Rivalry) | (intermediate) | ~33.5 C | 850 ppm | (intermediate) |
+| SSP5-8.5 (Fossil-fuel) | **0.37** | 34.6 C | 1135 ppm | 0.02 |
+
+The simple linear mode is more optimistic than even SSP1-2.6, suggesting the calibrated `climate_sensitivity` is conservative. Using real IPCC trajectories surfaces additional yield damage from temperature extremes, precipitation shifts, and CO2 nutrient dilution that the simple linear model does not capture.
+
+### 10.9 Code architecture and API
+
+```python
+from climate_nutrition_world3 import World3Integrator
+
+# Mode A: simple linear climate (default)
+model = World3Integrator.from_country('nigeria', 1971, 2100)
+model.run()
+print(model.agriculture.climate_factor[-1])     # 0.80 (linear)
+
+# Mode B: IPCC SSP5-8.5
+model = World3Integrator.from_country(
+    'nigeria', 1971, 2100, climate_scenario='ssp585'
+)
+model.run()
+print(model.agriculture.climate_factor[-1])     # 0.37 (IPCC-driven)
+print(model.climate_bridge.temperature[-1])     # 34.6 C
+print(model.climate_bridge.co2_ppm[-1])         # 1135 ppm
+```
+
+The `ClimateAgricultureBridge` can also be constructed directly without the integrator:
+
+```python
+from climate_nutrition_world3 import ClimateAgricultureBridge
+
+bridge = ClimateAgricultureBridge.for_nigeria(scenario='ssp245')
+# bridge.temperature, bridge.precipitation, bridge.co2_ppm,
+# bridge.climate_stress, bridge.protein_degradation,
+# bridge.iron_degradation, bridge.zinc_degradation
+```
+
+---
+
+## 11. How the Modules Connect
+
+### 11.1 The full coupling matrix
+
+Read this as: "this row sends to this column". The entry shows the variable and which year's value is used. Climate is added as an external input.
 
 | FROM ↓ \ TO → | Population | Capital | Agriculture | Pollution | Nutrition |
 |---|---|---|---|---|---|
@@ -705,26 +860,32 @@ Read this as: "this row sends to this column". The entry shows the variable and 
 | **Agriculture** | food_ratio[k−1] | food_ratio[k−1] | self | ag_pollution[k] | food_pc[k], food_ratio[k] |
 | **Pollution** | ppolx[k−1] | — | ppolx[k−1] | self | — |
 | **Nutrition** | — | — | — | — | self (terminal) |
+| **Climate** (external) | — | — | climate_factor[k] | — | CO2 nutrient dilution[k] |
 
-Total: 14 coupling arrows. 9 use current-year values (within the same timestep). 5 use prior-year values to break circular dependencies. This is the standard explicit Euler scheme.
+Total: 14 endogenous coupling arrows plus up to 2 climate arrows (when an IPCC SSP is active). 9 endogenous arrows use current-year values (within the same timestep). 5 endogenous arrows use prior-year values to break circular dependencies. This is the standard explicit Euler scheme. Climate arrows are always current-year because climate is an external input — it does not need to be computed from other sectors.
 
-### 10.2 The execution order within a single year
+### 11.2 The execution order within a single year
 
 ```
+0. (Optional) CLIMATE BRIDGE supplies climate_factor[k]
+   for this year if an IPCC SSP scenario is active
 1. POPULATION updates:    uses food_ratio[k-1], hsapc[k-1], ppolx[k-1]
    ↓ pop[k] now available
 2. CAPITAL updates:       uses pop[k], labor_force[k], food_ratio[k-1]
    ↓ io[k] and ag_investment[k] now available
-3. AGRICULTURE updates:   uses pop[k], ag_investment[k], ppolx[k-1]
+3. AGRICULTURE updates:   uses pop[k], ag_investment[k], ppolx[k-1],
+                              climate_factor[k] (from bridge or internal)
    ↓ food_per_capita[k] and food_ratio[k] now available
 4. POLLUTION updates:     uses io[k], pop[k], ag_pollution[k]
    ↓ ppolx[k] now available for NEXT year
 5. NUTRITION updates:     uses food_per_capita[k], food_ratio[k]
+   (per-crop nutrient analysis additionally applies CO2 dilution
+   factors from the bridge when an SSP is active)
 ```
 
 ---
 
-## 11. The Seven Feedback Loops
+## 12. The Seven Feedback Loops
 
 | Loop | Type | Mechanism |
 |---|---|---|
@@ -740,9 +901,9 @@ Total: 14 coupling arrows. 9 use current-year values (within the same timestep).
 
 ---
 
-## 12. Complete Data Sources Reference
+## 13. Complete Data Sources Reference
 
-### 12.1 Population and demographics
+### 13.1 Population and demographics
 
 | Source | URL | Used for |
 |---|---|---|
@@ -753,7 +914,7 @@ Total: 14 coupling arrows. 9 use current-year values (within the same timestep).
 | IRCC Annual Reports | https://www.canada.ca/en/immigration-refugees-citizenship/corporate/publications-manuals.html | Canada immigration |
 | WHO Global Health Observatory | https://www.who.int/data/gho | Life expectancy, U5MR for both countries |
 
-### 12.2 Economy and capital
+### 13.2 Economy and capital
 
 | Source | URL | Used for |
 |---|---|---|
@@ -762,7 +923,7 @@ Total: 14 coupling arrows. 9 use current-year values (within the same timestep).
 | Penn World Table 10.01 | https://www.rug.nl/ggdc/productivity/pwt/ | Capital-output ratios (ICOR) |
 | WHO Global Health Expenditure Database | https://apps.who.int/nha/database | Health spending fractions |
 
-### 12.3 Agriculture and food production
+### 13.3 Agriculture and food production
 
 | Source | URL | Used for |
 |---|---|---|
@@ -772,7 +933,7 @@ Total: 14 coupling arrows. 9 use current-year values (within the same timestep).
 | FAO Land Use Statistics | https://www.fao.org/faostat/en/#data/RL | Arable land for both countries |
 | Nigeria Bureau of Statistics | https://www.nigerianstat.gov.ng/ | Nigeria agriculture annual abstract |
 
-### 12.4 Pollution and environment
+### 13.4 Pollution and environment
 
 | Source | URL | Used for |
 |---|---|---|
@@ -781,7 +942,7 @@ Total: 14 coupling arrows. 9 use current-year values (within the same timestep).
 | World Bank PM2.5 indicator | https://data.worldbank.org/indicator/EN.ATM.PM25.MC.M3 | Cross-country pollution comparison |
 | IPCC AR6 WGII Chapter 5 | https://www.ipcc.ch/report/ar6/wg2/chapter/chapter-5/ | Climate-yield relationships |
 
-### 12.5 Nutrition
+### 13.5 Nutrition
 
 | Source | URL | Used for |
 |---|---|---|
@@ -792,7 +953,7 @@ Total: 14 coupling arrows. 9 use current-year values (within the same timestep).
 | Black et al. (2013) | https://www.thelancet.com/journals/lancet/article/PIIS0140-6736(13)60937-X/fulltext | Stunting-undernutrition relationship |
 | UNICEF/WHO/WB Joint Malnutrition Estimates | https://data.unicef.org/topic/nutrition/malnutrition/ | Baseline stunting rates |
 
-### 12.6 Crop nutrient profiles
+### 13.6 Crop nutrient profiles
 
 | Source | URL | Used for |
 |---|---|---|
@@ -802,7 +963,16 @@ Total: 14 coupling arrows. 9 use current-year values (within the same timestep).
 | Health Canada Canadian Nutrient File | https://food-nutrition.canada.ca/cnf-fce/index-eng.jsp | Canadian-specific food composition |
 | Gustavsson et al. (2011), FAO | https://www.fao.org/3/i2697e/i2697e.pdf | Post-harvest loss fractions |
 
-### 12.7 Model architecture and methodology
+### 13.7 Climate scenarios and nutrient effects
+
+| Source | URL | Used for |
+|---|---|---|
+| IPCC AR6 WGI (2021) Table SPM.1 | https://www.ipcc.ch/report/ar6/wg1/chapter/spm/ | SSP1-2.6 / SSP2-4.5 / SSP3-7.0 / SSP5-8.5 global warming trajectories |
+| IPCC AR6 WGII Chapter 5 (2022) | https://www.ipcc.ch/report/ar6/wg2/chapter/chapter-5/ | Climate-yield response, pollution-crop relationships |
+| CMIP6 ensemble | https://wcrp-cmip.org/cmip-phase-6-cmip6/ | Regional warming amplification factors (Southern Ontario 1.4x, Northern Nigeria 1.1x) |
+| Zhu et al. (2018) *Nature Plants* 4:957-964 | https://www.nature.com/articles/s41477-018-0263-1 | CO2-induced reduction in crop protein, iron, and zinc per unit mass |
+
+### 13.8 Model architecture and methodology
 
 | Source | URL | Used for |
 |---|---|---|
@@ -814,15 +984,15 @@ Total: 14 coupling arrows. 9 use current-year values (within the same timestep).
 
 ---
 
-## 13. Installation and Running the Dashboard
+## 14. Installation and Running the Dashboard
 
-### 13.1 Prerequisites
+### 14.1 Prerequisites
 
 - Python 3.12 (the dashboard is tested on this version)
 - A few hundred MB of disk space for dependencies (mainly numpy, scipy, plotly, streamlit)
 - A web browser
 
-### 13.2 Setup (first time)
+### 14.2 Setup (first time)
 
 From the project root directory:
 
@@ -846,7 +1016,7 @@ streamlit>=1.25
 plotly>=5.10
 ```
 
-### 13.3 Start the dashboard
+### 14.3 Start the dashboard
 
 ```
 streamlit run climate_nutrition_world3/dashboard_v2.py
@@ -857,11 +1027,11 @@ A browser window opens at `http://localhost:8501`. The model runs the baseline s
 
 ---
 
-## 14. Dashboard User Guide: What to Change and What to See
+## 15. Dashboard User Guide: What to Change and What to See
 
 The dashboard has 8 tabs, each designed for a specific kind of exploration. This section walks through them with concrete experiments to try.
 
-### 14.1 The sidebar (always visible)
+### 15.1 The sidebar (always visible)
 
 | Control | Default | What it does |
 |---|---|---|
@@ -878,7 +1048,7 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 | Baseline fioaa | Country baseline | Default fraction of economy directed to agriculture |
 | Pollution intensity decline | Country baseline | Annual cleanup from cleaner technology |
 
-### 14.2 Tab 1: Overview
+### 15.2 Tab 1: Overview
 
 **Purpose:** the front page. At a glance you see whether the system is stable or stressed.
 
@@ -888,7 +1058,7 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 
 **Experiment to try:** switch country between Canada and Nigeria in the sidebar. The contrast is dramatic — Canada's pollution rises modestly, food security stays at 1.0, stunting stays at 1%. Nigeria's pollution rises 40x, food security collapses to 0.25, stunting rises to 55%.
 
-### 14.3 Tab 2: Population
+### 15.3 Tab 2: Population
 
 **Purpose:** see the demographic engine in detail.
 
@@ -905,7 +1075,7 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 2. **Nigeria TFR:** slide "Initial TFR" from 6.9 down to 3.0. Switch to "Total population" — Nigeria 2100 population falls from ~1413M to ~600M. This demonstrates how much demographic momentum is in the system.
 3. **Mortality improvement:** slide "Mortality improvement" up. Watch life expectancy rise faster.
 
-### 14.4 Tab 3: Capital
+### 15.4 Tab 3: Capital
 
 **Purpose:** see the economy and how investment is allocated.
 
@@ -920,7 +1090,7 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 1. **Nigeria food crisis:** observe the "Allocation breakdown" sub-tab. Around 2050 when Nigeria's food_ratio drops below 1.0, the "To agriculture" stripe automatically thickens from 12% to about 35%. This is feedback loop B1 firing — the model represents the country reactively pouring more economic output into farming when food becomes scarce.
 2. **Health spending:** slide "Baseline fioaa" up for Nigeria. With more capital diverted to agriculture, less goes to services. HSAPC drops. Life expectancy falls in the Population tab.
 
-### 14.5 Tab 4: Agriculture
+### 15.5 Tab 4: Agriculture
 
 **Purpose:** see how food is produced and where yield is gained or lost.
 
@@ -936,7 +1106,7 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 2. **Yield technology:** slide "Yield tech growth" down for Nigeria from 0.9% to 0.4%/year (mimicking technology stagnation). Watch food per capita collapse faster.
 3. **Pollution damage:** observe the pollution factor in the yield decomposition. For Nigeria, as pollution rises post-2050, the pollution factor drops below 1.0 and drives yield down.
 
-### 14.6 Tab 5: Pollution
+### 15.6 Tab 5: Pollution
 
 **Purpose:** see what's polluting and how the environment responds.
 
@@ -950,7 +1120,24 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 1. **Clean tech:** slide "Pollution intensity decline" from 0.3% to 1.5% for Nigeria. The 2100 pollution index falls from ~40 to ~5. The yield damage in Agriculture is largely averted.
 2. **Saturation:** in the "Absorption dynamics" sub-tab, observe the "effective absorption time" line. As PP grows past the saturation threshold, absorption time rises sharply — the environment loses its self-cleaning capacity. This is the structural reason World3 produces overshoot.
 
-### 14.7 Tab 6: Nutrition and Crops (the policy-focused tab)
+### 15.7 Tab 6: Climate
+
+**Purpose:** see what climate inputs the model is using, and switch between the simple linear model and IPCC SSP scenarios.
+
+**Two modes shown in the tab:**
+
+- **No IPCC scenario selected** (sidebar dropdown = "None"): the tab shows the simple linear climate_factor trajectory (baseline vs your custom scenario). Climate factor declines slowly after 2000 according to the country's calibrated `climate_sensitivity`.
+- **IPCC scenario selected** (sidebar dropdown = SSP1-2.6 through SSP5-8.5): the tab shows four full IPCC trajectories — regional temperature, atmospheric CO2, precipitation, and the combined climate stress factor — plus CO2-induced nutrient dilution factors (Zhu et al. 2018) for protein, iron, and zinc.
+
+**Experiments:**
+1. **Compare simple vs IPCC:** with Nigeria selected, observe climate_factor 2100 in "None" mode (about 0.80). Switch sidebar to SSP5-8.5, return to the Climate tab. Climate factor 2100 now ~0.37 — IPCC trajectory is much harsher than the simple linear calibration. Switch to the Agriculture tab's "Food production" sub-tab to see food per capita drop further.
+2. **Compare SSP scenarios:** cycle through SSP1-2.6, SSP2-4.5, SSP3-7.0, SSP5-8.5. The temperature, CO2, and climate stress lines all shift visibly. Notice that even SSP1-2.6 (the strong-mitigation scenario) still produces meaningful yield damage by 2100.
+3. **Watch CO2 nutrient dilution:** with SSP5-8.5 selected, see the protein retention factor fall from 1.0 in 1971 to about 0.89 by 2100 (11% protein loss per kg of crop). Switch to the Nutrition tab; the per-crop protein adequacy values reflect this dilution.
+4. **Regional contrast:** switch country between Canada and Nigeria with SSP5-8.5 active. Canada's climate factor in 2100 is about 0.53 (significant damage), Nigeria's is about 0.37 (worse). Both warm but Nigeria's tropical baseline is already near plant heat tolerance limits, so damage is larger.
+
+**What this tab makes visible:** climate is an external driver, not a sector. Its trajectories are set by IPCC scenario choices, not by anything inside the model. But its effects (climate_factor, CO2 nutrient dilution) propagate into Agriculture and Nutrition.
+
+### 15.8 Tab 7: Nutrition and Crops (the policy-focused tab)
 
 **Purpose:** see how nutrition outcomes emerge from food production, by crop, by nutrient.
 
@@ -978,7 +1165,7 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 
 5. **See the difference between gross and effective food:** sub-tab 6c shows "Production" (gross tonnes from agriculture) vs "To food (after losses, non-food use)". The gap between these reveals where supply-chain improvements would matter most.
 
-### 14.8 Tab 7: Cascade Lab
+### 15.9 Tab 8: Cascade Lab
 
 **Purpose:** see how a single parameter change propagates through every sector at once.
 
@@ -989,7 +1176,7 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 
 2. **Multi-parameter convergent intervention:** Now change multiple parameters at once — for Nigeria: TFR 6.9 → 4.0, yield growth 0.009 → 0.015, fioaa 0.12 → 0.20, pollution decline 0.003 → 0.012. Watch the cascade. Stunting drops dramatically, food security recovers, life expectancy stabilises. This demonstrates that integrated policy packages have much larger effects than single interventions.
 
-### 14.9 Tab 8: Feedback Loops
+### 15.10 Tab 9: Feedback Loops
 
 **Purpose:** see each of the seven loops in isolation, both as a diagram (left) and as a chart (right) showing the loop's component variables.
 
@@ -1002,11 +1189,11 @@ The dashboard has 8 tabs, each designed for a specific kind of exploration. This
 
 ---
 
-## 15. Policy Implications for Nigeria
+## 16. Policy Implications for Nigeria
 
 This is where the model becomes useful for actual policy analysis. The dashboard's per-crop nutrition analysis identifies specific gaps and tests interventions quantitatively.
 
-### 15.1 The vitamin A crisis
+### 16.1 The vitamin A crisis
 
 **Finding:** Under baseline assumptions, Nigeria 2025 has a vitamin A adequacy of approximately 0.06 — meaning the average Nigerian consumes only 6% of the recommended daily vitamin A intake. This matches real-world data: Nigeria has one of the world's highest vitamin A deficiency rates, with roughly 30% of children under 5 affected (UNICEF Nigeria Multiple Indicator Cluster Survey).
 
@@ -1018,7 +1205,7 @@ This is where the model becomes useful for actual policy analysis. The dashboard
 
 **Intervention 3: Vitamin A fortification of staples.** This is not in the current model but can be approximated by overriding the maize vitamin A profile to reflect biofortified varieties (e.g., Pro-Vitamin A maize from HarvestPlus, which delivers ~200 µg RAE/100g instead of 11 µg). Future work should add a fortification slider.
 
-### 15.2 Calorie and protein gaps
+### 16.2 Calorie and protein gaps
 
 **Finding:** Nigeria 2025 per-crop analysis shows calorie adequacy of 0.51 and protein adequacy of 0.52 — meaning the average Nigerian consumes about half the required calories and protein when post-harvest losses and non-food uses are accounted for. The basic Nutrition sector reports higher numbers because it treats all crop production as food.
 
@@ -1028,7 +1215,7 @@ This is where the model becomes useful for actual policy analysis. The dashboard
 
 **Intervention 3: Aquaculture and livestock.** The current model focuses on plant crops. Animal-source food contributions could be added — Nigeria's tilapia farming and small ruminant production provide significant complete protein. Future work.
 
-### 15.3 Yield intensification
+### 16.3 Yield intensification
 
 **Finding:** Nigeria's tech yield growth is 0.9%/year, less than half of Canada's 1.4%. Doubling Nigeria's yield growth would substantially reduce the food gap by 2050.
 
@@ -1040,7 +1227,7 @@ This is where the model becomes useful for actual policy analysis. The dashboard
 
 **Trade-off:** Intensification raises pollution. In the model, more `ag_investment` produces more `ag_pollution`, which raises `ppolx`, which reduces yield. This is reinforcing loop R3 — the pollution death spiral. Nigeria's path forward needs both intensification AND clean technology adoption (higher `pollution_intensity_decline`).
 
-### 15.4 Demographic transition
+### 16.4 Demographic transition
 
 **Finding:** Nigeria's population continues growing rapidly because TFR remains above 4 even by 2030. Each child born adds to food demand for ~70 years.
 
@@ -1050,7 +1237,7 @@ This is where the model becomes useful for actual policy analysis. The dashboard
 
 **Intervention 3: Urbanisation.** Urban TFR is typically lower than rural by 1-2 children. As Nigeria urbanises (currently ~52%, projected ~70% by 2050), TFR declines structurally. Not currently a model parameter but could be added.
 
-### 15.5 Climate adaptation
+### 16.5 Climate adaptation
 
 **Finding:** Nigeria's climate sensitivity (0.002/year yield loss after 2000) compounds with population growth and pollution to produce yield collapse by 2080.
 
@@ -1060,7 +1247,7 @@ This is where the model becomes useful for actual policy analysis. The dashboard
 
 **Intervention 3: National adaptation strategy alignment with NDCs.** Nigeria's Nationally Determined Contributions under the Paris Agreement include agriculture adaptation targets. Implementation effort directly maps to model parameter changes.
 
-### 15.6 Convergent policy bundles
+### 16.6 Convergent policy bundles
 
 The Cascade Lab tab demonstrates that **multi-axis interventions produce far larger benefits than single ones**. A realistic convergent bundle for Nigeria might include:
 
@@ -1079,35 +1266,35 @@ This is a quantitatively defensible scenario that could be presented to Nigerian
 
 ---
 
-## 16. Limitations and Caveats
+## 17. Limitations and Caveats
 
 The model is a tool for **structured exploration**, not a forecast. Specific limitations to disclose:
 
-### 16.1 Scope limitations
+### 17.1 Scope limitations
 
 - **Single country at a time.** The model does not represent trade flows between Canada and Nigeria, nor between either country and the global market. Global food prices, geopolitical disruptions, and bilateral trade agreements are not modelled.
 - **No subnational variation.** Nigeria's north and south have very different agro-ecological zones; the model uses national averages.
 - **No animal-source foods.** Meat, dairy, eggs, and fish are not currently modelled. Nigerian aquaculture and pastoralism are growing — adding these would refine the protein and micronutrient analysis.
 - **No urban/rural distinction.** Both countries are modelled as homogeneous national populations, ignoring that nutrition outcomes differ substantially between urban and rural areas.
 
-### 16.2 Data quality
+### 17.2 Data quality
 
 - **Crop nutrient profiles** are based on USDA FoodData Central and FAO/INFOODS averages. Real on-the-ground varieties can differ by 2-3x in some micronutrients. Country-specific food composition tables would improve precision.
 - **Post-harvest loss fractions** are FAO global averages, not country-specific measurements.
 - **Climate parameters** are simplified — a real climate-yield analysis would use CMIP6 ensemble projections downscaled to country level.
 
-### 16.3 Behavioural assumptions
+### 17.3 Behavioural assumptions
 
 - **Capital allocation logic** assumes the country reactively shifts investment toward agriculture when food becomes scarce. Real governments often fail to do this in time or at sufficient scale (the model is optimistic on this front).
 - **TFR transition** is modelled as exponential decay toward a target. Real demographic transitions are more complex — they can stall (Nigeria 2010-2020 TFR stalled around 5.5) or reverse temporarily.
 - **No price signals.** The model has no money, no markets, no prices. It is a physical-flows model. Adding prices and economic agents would be a substantial extension.
 
-### 16.4 Integration scheme
+### 17.4 Integration scheme
 
 - **1-year timestep** with explicit Euler. Short-term dynamics (within-year shocks, seasonal variation) are not captured.
 - **1-year coupling lag** on feedback arrows. Mathematically necessary but means responses lag by one year relative to a true simultaneous equilibrium.
 
-### 16.5 Calibration
+### 17.5 Calibration
 
 - Country-level parameters were chosen to match observed historical trajectories 1971-2023. Beyond 2023, the model is extrapolating — it produces *plausible* trajectories under continued current trends, not *predicted* ones. Real future depends on policy choices the model does not represent.
 
@@ -1115,7 +1302,7 @@ These limitations do not invalidate the model. They define its scope: it is a **
 
 ---
 
-## 17. References
+## 18. References
 
 ### Foundational system dynamics
 
@@ -1167,15 +1354,17 @@ These limitations do not invalidate the model. They define its scope: it is a **
 
 | File | Purpose |
 |---|---|
-| `climate_nutrition_world3/dashboard_v2.py` | Main interactive dashboard |
-| `climate_nutrition_world3/world3_integrator.py` | Master coupling class (5 sectors) |
+| `climate_nutrition_world3/dashboard_v2.py` | Main interactive dashboard (9 tabs) |
+| `climate_nutrition_world3/world3_integrator.py` | Master coupling class (5 sectors plus optional climate bridge) |
 | `climate_nutrition_world3/sectors/population_sector.py` | Population module |
 | `climate_nutrition_world3/sectors/capital_sector.py` | Capital module |
-| `climate_nutrition_world3/sectors/agriculture_sector.py` | Agriculture module |
+| `climate_nutrition_world3/sectors/agriculture_sector.py` | Agriculture module (accepts optional climate_factor_override) |
 | `climate_nutrition_world3/sectors/pollution_sector.py` | Pollution module |
 | `climate_nutrition_world3/sectors/nutrition_sector.py` | Nutrition module |
-| `climate_nutrition_modelling/models/nutrient_converter.py` | Crop nutrient profiles |
-| `climate_nutrition_world3/DOCUMENTATION.md` | This document |
+| `climate_nutrition_world3/sectors/climate_agriculture_bridge.py` | IPCC SSP climate bridge (optional overlay) |
+| `climate_nutrition_modelling/models/nutrient_converter.py` | Crop nutrient profiles (FAO/INFOODS, USDA, verified units) |
+| `climate_nutrition_modelling/models/climate_scenarios.py` | IPCC AR6 SSP scenario generator (temperature, precip, CO2) |
+| `DOCUMENTATION.md` | This document |
 
 ### A.2 Quick start commands
 
@@ -1183,12 +1372,22 @@ These limitations do not invalidate the model. They define its scope: it is a **
 # Run dashboard
 streamlit run climate_nutrition_world3/dashboard_v2.py
 
-# Run a single scenario from Python
+# Run a single scenario from Python (no IPCC climate)
 python -c "
 from climate_nutrition_world3 import World3Integrator
 m = World3Integrator.from_country('nigeria', 1971, 2100)
 m.run()
 m.print_summary()
+"
+
+# Run with IPCC SSP5-8.5 climate scenario
+python -c "
+from climate_nutrition_world3 import World3Integrator
+m = World3Integrator.from_country('nigeria', 1971, 2100, climate_scenario='ssp585')
+m.run()
+print(f'Temperature 2100: {m.climate_bridge.temperature[-1]:.1f} C')
+print(f'CO2 2100: {m.climate_bridge.co2_ppm[-1]:.0f} ppm')
+print(f'Climate factor 2100: {m.agriculture.climate_factor[-1]:.2f}')
 "
 ```
 
@@ -1196,8 +1395,9 @@ m.print_summary()
 
 1. Open the dashboard.
 2. Select **Nigeria** in the sidebar.
-3. Go to **Tab 6: Nutrition and Crops → sub-tab 6d (heatmap)** to see the headline nutrition gaps.
-4. Go to **Tab 6 → sub-tab 6b (crop mix editor)** and try the sweet potato + leafy greens intervention.
-5. Go to **Tab 7: Cascade Lab** and try a multi-parameter convergent intervention.
+3. Go to **Tab 6: Climate** and try switching the sidebar IPCC SSP scenario between None, SSP1-2.6, and SSP5-8.5 to see climate trajectories change.
+4. Go to **Tab 7: Nutrition and Crops → sub-tab on heatmap** to see the headline nutrition gaps.
+5. Go to **Tab 7 → sub-tab on crop mix editor** and try the sweet potato + leafy greens intervention.
+6. Go to **Tab 8: Cascade Lab** and try a multi-parameter convergent intervention.
 
 The model's value comes from interactive exploration, not just from reading the documentation. Use it.

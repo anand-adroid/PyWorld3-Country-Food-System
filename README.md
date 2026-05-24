@@ -87,10 +87,33 @@ international agency data. Primary sources:
 - USDA FoodData Central (per-crop nutrient profiles)
 - FAO/INFOODS Food Composition Tables (2022)
 - FAO West African Food Composition Table (FAO 2019)
-- IPCC AR6 (climate trajectories)
+- IPCC AR6 WGI (2021) Table SPM.1 (IPCC SSP temperature and CO2 trajectories)
+- Zhu et al. (2018) Nature Plants 4:957-964 (CO2-induced nutrient dilution)
+- CMIP6 ensemble medians (regional climate baselines)
 - Penn World Table 10.01 (capital-output ratios)
 
 Full citations and direct URLs in DOCUMENTATION.md.
+
+## Climate module
+
+In addition to the five endogenous sectors, the model includes an
+**exogenous climate module** that can run in either of two modes:
+
+- **Simple linear** (default) — yield is reduced by a calibrated
+  `climate_sensitivity` per year after 2000. Country-specific:
+  Canada 0.001/year, Nigeria 0.002/year.
+- **IPCC SSP scenario** — selectable from the dashboard sidebar
+  (SSP1-2.6 / SSP2-4.5 / SSP3-7.0 / SSP5-8.5). Uses IPCC AR6
+  temperature, precipitation, and CO2 trajectories downscaled to the
+  country's main agricultural region (Southern Ontario for Canada,
+  Northern Nigeria savanna for Nigeria). CO2-induced nutrient
+  dilution (Zhu et al. 2018) is applied to protein, iron, and zinc.
+
+Climate affects agriculture (yield damage) and nutrition (nutrient
+quality damage). It does not affect Population, Capital, or Pollution
+directly — all climate effects flow through Agriculture into Nutrition.
+See Section 10 of DOCUMENTATION.md for the full climate equations and
+data sources.
 
 ## Project structure
 
