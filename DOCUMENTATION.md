@@ -30,6 +30,8 @@
 
 This project is a five-sector coupled **system dynamics model** of national food systems, calibrated for **Canada** (industrialized economy) and **Nigeria** (developing economy). It follows the **World3 architecture** developed by Meadows et al. (1972) in *The Limits to Growth*, implemented in Python on top of the open-source **PyWorld3** library (Vanwynsberghe, 2021).
 
+Dashboard https://pyworld3-country-food-system-keuha5uzmuwnzabnmm4txz.streamlit.app/
+
 The model simulates how five interdependent sectors evolve from 1971 to 2100:
 
 | Sector | Stocks (state variables) | What it represents |
