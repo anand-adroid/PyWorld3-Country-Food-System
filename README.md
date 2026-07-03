@@ -27,6 +27,8 @@ The interactive Streamlit dashboard (9 tabs) lets users adjust any
 parameter, crop mix, or IPCC scenario and watch the effects cascade
 through all five sectors and seven named feedback loops.
 
+Dashboard https://pyworld3-country-food-system-keuha5uzmuwnzabnmm4txz.streamlit.app/
+
 ## Quick start
 
 Install dependencies:
